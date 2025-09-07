@@ -1,0 +1,164 @@
+{
+  "name": "PropertyListingSchemaV2",
+  "primary_key": [
+    "Location",
+    "Tenant",
+    "Area_Sft",
+    "Price_INR"
+  ],
+  "fields": [
+    {
+      "name": "Location",
+      "type": "string",
+      "required": true,
+      "desc": "Area/Neighborhood (e.g., DILSUKHNAGAR)"
+    },
+    {
+      "name": "Tenant",
+      "type": "string",
+      "required": true,
+      "desc": "Tenant/brand (e.g., BRANDED JEWELLERY, BANK)"
+    },
+    {
+      "name": "Area_Text",
+      "type": "string",
+      "required": false
+    },
+    {
+      "name": "Area_Sft",
+      "type": "number",
+      "required": false,
+      "min": 0,
+      "max": 200000
+    },
+    {
+      "name": "Floor",
+      "type": "string",
+      "required": false
+    },
+    {
+      "name": "Price_Text",
+      "type": "string",
+      "required": false
+    },
+    {
+      "name": "Price_INR",
+      "type": "number",
+      "required": false,
+      "min": 0,
+      "max": 5000000000.0
+    },
+    {
+      "name": "Rent_Text",
+      "type": "string",
+      "required": false
+    },
+    {
+      "name": "Rent_INR",
+      "type": "number",
+      "required": false,
+      "min": 0,
+      "max": 100000000.0
+    },
+    {
+      "name": "Lease_Text",
+      "type": "string",
+      "required": false
+    },
+    {
+      "name": "Lease_Years",
+      "type": "number",
+      "required": false,
+      "min": 0,
+      "max": 99
+    },
+    {
+      "name": "LockIn_Text",
+      "type": "string",
+      "required": false
+    },
+    {
+      "name": "LockIn_Years",
+      "type": "number",
+      "required": false,
+      "min": 0,
+      "max": 99
+    },
+    {
+      "name": "Increment_Text",
+      "type": "string",
+      "required": false
+    },
+    {
+      "name": "Increment_%",
+      "type": "number",
+      "required": false,
+      "min": 0,
+      "max": 100
+    },
+    {
+      "name": "Increment_Every_Years",
+      "type": "number",
+      "required": false,
+      "min": 0,
+      "max": 50
+    },
+    {
+      "name": "Advance_Text",
+      "type": "string",
+      "required": false
+    },
+    {
+      "name": "Advance_Months",
+      "type": "number",
+      "required": false,
+      "min": 0,
+      "max": 36
+    },
+    {
+      "name": "Parking_Text",
+      "type": "string",
+      "required": false
+    },
+    {
+      "name": "Parking_Cars",
+      "type": "number",
+      "required": false,
+      "min": 0,
+      "max": 500
+    },
+    {
+      "name": "UDS_Text",
+      "type": "string",
+      "required": false
+    },
+    {
+      "name": "UDS_SqYards",
+      "type": "number",
+      "required": false,
+      "min": 0,
+      "max": 10000
+    },
+    {
+      "name": "Gross_Yield_%",
+      "type": "number",
+      "required": false,
+      "min": -100,
+      "max": 100
+    },
+    {
+      "name": "Price_per_Sft",
+      "type": "number",
+      "required": false,
+      "min": 0,
+      "max": 100000000.0
+    },
+    {
+      "name": "Rent_per_Sft",
+      "type": "number",
+      "required": false,
+      "min": 0,
+      "max": 1000000.0
+    }
+  ]
+}
