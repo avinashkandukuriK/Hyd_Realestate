@@ -4,7 +4,10 @@ import json
 import pandas as pd
 import streamlit as st
 from io import BytesIO
-import matplotlib.pyplot as plt
+try:
+    import matplotlib.pyplot as plt
+except Exception:
+    plt = None
 import numpy as np
 import hashlib
 
@@ -313,33 +316,43 @@ with tab_insights:
     else:
         st.markdown("**Top Locations by Listing Count**")
         loc_counts = f2["Location"].astype(str).value_counts().head(10)
-        fig1, ax1 = plt.subplots()
-        ax1.bar(loc_counts.index, loc_counts.values)
-        ax1.set_xlabel("Location")
-        ax1.set_ylabel("Listings")
-        ax1.set_xticklabels(loc_counts.index, rotation=45, ha="right")
-        st.pyplot(fig1)
+        if plt is None:
+            st.bar_chart(loc_counts)
+        else:
+            fig1, ax1 = plt.subplots()
+            ax1.bar(loc_counts.index, loc_counts.values)
+            ax1.set_xlabel("Location")
+            ax1.set_ylabel("Listings")
+            ax1.set_xticklabels(loc_counts.index, rotation=45, ha="right")
+            st.pyplot(fig1)
 
         st.markdown("**Gross Yield (%) Distribution**")
         ys = f2["Gross_Yield_%"].dropna()
         if not ys.empty:
-            fig2, ax2 = plt.subplots()
-            ax2.hist(ys, bins=10)
-            ax2.set_xlabel("Gross Yield (%)")
-            ax2.set_ylabel("Frequency")
-            st.pyplot(fig2)
+            if plt is None:
+                hist = ys.value_counts(bins=10).sort_index()
+                st.bar_chart(hist)
+            else:
+                fig2, ax2 = plt.subplots()
+                ax2.hist(ys, bins=10)
+                ax2.set_xlabel("Gross Yield (%)")
+                ax2.set_ylabel("Frequency")
+                st.pyplot(fig2)
         else:
             st.write("No yield data available.")
 
         st.markdown("**Price vs Area (bubble ~ Rent)**")
         valid = f2.dropna(subset=["Price_INR","Area_Sft","Rent_INR"])
         if not valid.empty:
-            s = (valid["Rent_INR"] / valid["Rent_INR"].max()) * 300.0
-            fig3, ax3 = plt.subplots()
-            ax3.scatter(valid["Area_Sft"], valid["Price_INR"], s=s)
-            ax3.set_xlabel("Area (Sft)")
-            ax3.set_ylabel("Price (INR)")
-            st.pyplot(fig3)
+            if plt is None:
+                st.scatter_chart(valid.rename(columns={"Area_Sft":"x","Price_INR":"y"})[["x","y"]])
+            else:
+                s = (valid["Rent_INR"] / valid["Rent_INR"].max()) * 300.0
+                fig3, ax3 = plt.subplots()
+                ax3.scatter(valid["Area_Sft"], valid["Price_INR"], s=s)
+                ax3.set_xlabel("Area (Sft)")
+                ax3.set_ylabel("Price (INR)")
+                st.pyplot(fig3)
         else:
             st.write("Not enough data for scatter plot.")
 
