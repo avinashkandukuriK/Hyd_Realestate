@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+.pytest_cache/
+.streamlit/secrets.toml
+.DS_Store
+Thumbs.db
+
+# Data hygiene
+*.xlsx
+*.csv
+!PROPERTY_LIST_ENRICHED.xlsx
+!PROPERTY_LIST_ENRICHED.csv
