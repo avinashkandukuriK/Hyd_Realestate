@@ -4,34 +4,20 @@ import json
 import pandas as pd
 import streamlit as st
 from io import BytesIO
+import numpy as np
+
+# Safe matplotlib import; fallback to Streamlit charts if not available
 try:
     import matplotlib.pyplot as plt
 except Exception:
     plt = None
-import numpy as np
-import hashlib
 
-from app_loader_v2 import load_property_data
-
-SCHEMA_PATH = "property_schema_v2.json"
-
-st.set_page_config(page_title="Property Dashboard — V2.7 (Pro)", layout="wide")
-st.title("🏢 Property Listings Dashboard — V2.7 (Pro)")
-
-st.markdown(
-    "This build adds **Net numbers**, **winsorized DealScore**, **what‑if sliders**, **Shortlist**, and **location medians/outlier flags**, "
-    "on top of all V2.6 features (currency toggle, include‑blank filters, Insights, Loan, Best Deals, Top Deals Only)."
-)
-
-# ---------------- Helpers ----------------
-@st.cache_data(show_spinner=False)
-def load_default(schema_path: str):
-    try:
-        df = load_property_data("PROPERTY_LIST_ENRICHED.xlsx", schema_path)
-        return df
-    except Exception as e:
-        st.error(f"Failed to load default file: {e}")
-        return None
+# ======== Utilities ========
+def to_excel_bytes(df_out: pd.DataFrame, sheet="Sheet1") -> bytes:
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        df_out.to_excel(writer, index=False, sheet_name=sheet)
+    return output.getvalue()
 
 def coerce_numeric(df, cols):
     for c in cols:
@@ -52,24 +38,12 @@ def fmt_num(val, decimals=0):
 def scale_currency(series, unit):
     s = pd.to_numeric(series, errors="coerce")
     if unit == "INR":
-        factor = 1.0
-        label = "INR"
-        symbol = "₹"
+        factor, label = 1.0, "INR"
     elif unit == "Lakh":
-        factor = 1e5
-        label = "Lakh"
-        symbol = "₹"
+        factor, label = 1e5, "Lakh"
     else:
-        factor = 1e7
-        label = "Crore"
-        symbol = "₹"
-    return s / factor, label, symbol
-
-def to_excel_bytes(df_out: pd.DataFrame, sheet="Sheet1") -> bytes:
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        df_out.to_excel(writer, index=False, sheet_name=sheet)
-    return output.getvalue()
+        factor, label = 1e7, "Crore"
+    return s / factor, label, "₹"
 
 def emi(p, r, n):
     try:
@@ -124,19 +98,72 @@ def norm01(s):
 
 def rowkey(row):
     base = f"{row.get('Location','')}|{row.get('Tenant','')}|{row.get('Area_Sft','')}|{row.get('Price_INR','')}|{row.get('Rent_INR','')}"
+    import hashlib
     return hashlib.md5(base.encode('utf-8')).hexdigest()
 
-# ---------------- Load ----------------
-uploaded = st.file_uploader("Upload cleaned/enriched dataset (.xlsx or .csv)", type=["xlsx", "csv"])
-if uploaded is not None:
-    if uploaded.name.lower().endswith(".xlsx"):
-        df = pd.read_excel(uploaded)
+# ======== App ========
+st.set_page_config(page_title="Property Dashboard — V2.7 (Pro)", layout="wide")
+st.title("🏢 Property Listings Dashboard — V2.7 (Pro)")
+
+st.markdown(
+    "This build includes **Net numbers**, **winsorized DealScore**, **what‑if sliders**, **Shortlist**, "
+    "and global **currency unit** with **Price/Rent sliders** and **display‑scaled money columns**."
+)
+
+# ---- Global currency unit (applies to all tabs) ----
+st.sidebar.header("Display")
+unit = st.sidebar.radio("Currency unit", ["INR", "Lakh", "Crore"], index=2, key="currency_unit_global")
+def monthly_unit(u: str) -> str:
+    # For readability: show monthly flows in Lakh when unit is Crore
+    return u if u != "Crore" else "Lakh"
+
+# ---- Currency-aware slider (shows in selected unit; returns INR range) ----
+def currency_slider(series, base_label, unit):
+    s = pd.to_numeric(series, errors="coerce").dropna()
+    if s.empty:
+        return None
+    if unit == "INR":
+        factor, unit_lbl = 1.0, "INR"
+    elif unit == "Lakh":
+        factor, unit_lbl = 1e5, "Lakh"
     else:
-        df = pd.read_csv(uploaded)
-else:
-    df = load_default(SCHEMA_PATH)
-    if df is None:
-        st.stop()
+        factor, unit_lbl = 1e7, "Crore"
+    s_scaled = s / factor
+    lo, hi = float(s_scaled.min()), float(s_scaled.max())
+    rng = hi - lo if hi > lo else 1.0
+    step = max(round(rng / 100.0, 2), 0.01 if unit_lbl == "Crore" else 0.1 if unit_lbl == "Lakh" else 1.0)
+    sel_lo, sel_hi = st.sidebar.slider(f"{base_label} ({unit_lbl})", min_value=lo, max_value=hi, value=(lo, hi), step=step)
+    return (sel_lo * factor, sel_hi * factor)
+
+# ---- Data load (robust) ----
+uploaded = st.file_uploader("Upload cleaned/enriched dataset (.xlsx or .csv)", type=["xlsx", "csv"])
+df = None
+
+if uploaded is not None:
+    try:
+        if uploaded.name.lower().endswith(".xlsx"):
+            df = pd.read_excel(uploaded)
+        else:
+            df = pd.read_csv(uploaded)
+    except Exception as e:
+        st.error(f"Failed to read upload: {e}")
+
+if df is None:
+    st.info("No file uploaded yet. Checking for sample files in repo: PROPERTY_LIST_ENRICHED.xlsx / .csv")
+    for _cand in ["PROPERTY_LIST_ENRICHED.xlsx", "PROPERTY_LIST_ENRICHED.csv"]:
+        try:
+            if _cand.endswith(".xlsx"):
+                df = pd.read_excel(_cand)
+            else:
+                df = pd.read_csv(_cand)
+            st.success(f"Loaded sample data: {_cand}")
+            break
+        except Exception:
+            df = None
+
+if df is None:
+    st.warning("Sample files not found in repo. Using in‑memory demo data so the app can run.")
+    df = pd.DataFrame([{"Location":"KPHB","Tenant":"BRANDED ONLINE DELIVERY POINT.","Area_Sft":3120,"Price_INR":53500000,"Rent_INR":270000,"Lease_Years":5,"LockIn_Years":1,"Increment_%":5,"Increment_Every_Years":1,"Advance_Months":5,"Parking_Cars":0,"UDS_SqYards":null,"Price_per_Sft":17147.44,"Rent_per_Sft":86.54,"Gross_Yield_%":6.056},{"Location":"KOMPALLY","Tenant":"CINEMA THEATRE","Area_Sft":11000,"Price_INR":130000000,"Rent_INR":650000,"Lease_Years":9,"LockIn_Years":5,"Increment_%":15,"Increment_Every_Years":3,"Advance_Months":3,"Parking_Cars":0,"UDS_SqYards":null,"Price_per_Sft":11818.18,"Rent_per_Sft":59.09,"Gross_Yield_%":6.0},{"Location":"NALLAGANDLA","Tenant":"BRANDED EDUCATIONAL INSTITUTION","Area_Sft":37927,"Price_INR":450000000,"Rent_INR":2300000,"Lease_Years":9,"LockIn_Years":3,"Increment_%":15,"Increment_Every_Years":3,"Advance_Months":3,"Parking_Cars":0,"UDS_SqYards":null,"Price_per_Sft":11864.9,"Rent_per_Sft":60.64,"Gross_Yield_%":6.133},{"Location":"SAINIKPURI","Tenant":"world's largest hearing aid retailer.","Area_Sft":965,"Price_INR":17500000,"Rent_INR":90000,"Lease_Years":5,"LockIn_Years":2,"Increment_%":5,"Increment_Every_Years":2,"Advance_Months":0,"Parking_Cars":0,"UDS_SqYards":null,"Price_per_Sft":18134.72,"Rent_per_Sft":93.26,"Gross_Yield_%":6.171},{"Location":"SANATHNAGAR","Tenant":"Salon","Area_Sft":1038,"Price_INR":22500000,"Rent_INR":116000,"Lease_Years":4,"LockIn_Years":1,"Increment_%":5,"Increment_Every_Years":2,"Advance_Months":0,"Parking_Cars":0,"UDS_SqYards":null,"Price_per_Sft":21676.3,"Rent_per_Sft":111.75,"Gross_Yield_%":6.187},{"Location":"SANATHNAGAR","Tenant":"RETAIL SHOWROOM.","Area_Sft":8000,"Price_INR":100000000,"Rent_INR":600000,"Lease_Years":9,"LockIn_Years":3,"Increment_%":15,"Increment_Every_Years":3,"Advance_Months":3,"Parking_Cars":0,"UDS_SqYards":null,"Price_per_Sft":12500.0,"Rent_per_Sft":75.0,"Gross_Yield_%":7.2},{"Location":"DILSUKHNAGAR","Tenant":"BRANDED JEWELLERY","Area_Sft":3403,"Price_INR":68500000,"Rent_INR":322000,"Lease_Years":18,"LockIn_Years":3,"Increment_%":15,"Increment_Every_Years":3,"Advance_Months":6,"Parking_Cars":2,"UDS_SqYards":116.0,"Price_per_Sft":20129.3,"Rent_per_Sft":94.62,"Gross_Yield_%":5.641},{"Location":"HIMAYATHNAGAR","Tenant":"RETAIL SHOWROOM.","Area_Sft":945,"Price_INR":49000000,"Rent_INR":240000,"Lease_Years":5,"LockIn_Years":2,"Increment_%":5,"Increment_Every_Years":2,"Advance_Months":0,"Parking_Cars":0,"UDS_SqYards":null,"Price_per_Sft":51851.85,"Rent_per_Sft":253.97,"Gross_Yield_%":5.878}])
 
 # Derived if missing
 if "Gross_Yield_%" not in df.columns and set(["Rent_INR", "Price_INR"]).issubset(df.columns):
@@ -146,7 +173,7 @@ if "Price_per_Sft" not in df.columns and set(["Price_INR", "Area_Sft"]).issubset
 if "Rent_per_Sft" not in df.columns and set(["Rent_INR", "Area_Sft"]).issubset(df.columns):
     df["Rent_per_Sft"] = (pd.to_numeric(df["Rent_INR"], errors="coerce") / pd.to_numeric(df["Area_Sft"], errors="coerce")).replace([float("inf")], None)
 
-# Location medians & outlier flags
+# Location medians (quick version)
 def add_loc_medians(dd: pd.DataFrame) -> pd.DataFrame:
     out = dd.copy()
     for col in ["Price_per_Sft", "Rent_per_Sft", "Gross_Yield_%"]:
@@ -154,17 +181,10 @@ def add_loc_medians(dd: pd.DataFrame) -> pd.DataFrame:
             med = out.groupby("Location")[col].median()
             out[f"LocMedian_{col}"] = out["Location"].map(med)
             out[f"VsLocMedian_{col}_%"] = 100.0 * (pd.to_numeric(out[col], errors="coerce") / pd.to_numeric(out[f"LocMedian_{col}"], errors="coerce") - 1.0)
-            # Robust outlier via MAD
-            grp = out.groupby("Location")[col]
-            med_all = grp.transform("median")
-            mad = (grp.transform(lambda s: (np.abs(s - s.median())).median())) * 1.4826
-            z = (np.abs(out[col] - med_all)) / (mad.replace(0, np.nan))
-            out[f"Outlier_{col}"] = (z > 3).astype(int)
     return out
-
 df = add_loc_medians(df)
 
-# ---------------- Tabs ----------------
+# ======== Tabs ========
 tab_browse, tab_insights, tab_loan, tab_deals = st.tabs(["📋 Browse", "📈 Insights", "💸 Loan", "⭐ Best Deals"])
 
 # ---- Browse ----
@@ -182,16 +202,14 @@ with tab_browse:
         step = max(1.0, (hi - lo) / 100.0)
         return st.sidebar.slider(label, min_value=lo, max_value=hi, value=(lo, hi), step=step)
 
-    pr_range = slider_for(df.get("Price_INR", pd.Series(dtype=float)), "Price (INR)")
+    pr_range = currency_slider(df.get("Price_INR", pd.Series(dtype=float)), "Price", unit)
+    rent_range = currency_slider(df.get("Rent_INR", pd.Series(dtype=float)), "Rent", unit)
     ar_range = slider_for(df.get("Area_Sft", pd.Series(dtype=float)), "Area (Sft)")
     ye_range = slider_for(df.get("Gross_Yield_%", pd.Series(dtype=float)), "Gross Yield (%)")
     le_range = slider_for(df.get("Lease_Years", pd.Series(dtype=float)), "Lease (years)")
     li_range = slider_for(df.get("LockIn_Years", pd.Series(dtype=float)), "Lock-in (years)")
 
     parking_only = st.sidebar.checkbox("Has Parking only", value=False)
-
-    st.sidebar.header("Display")
-    unit = st.sidebar.radio("Currency unit", ["INR","Lakh","Crore"], index=2)
     top_deals = st.sidebar.checkbox("Sort by Top Deals (Yield ↓)", value=False)
 
     st.sidebar.header("Blanks")
@@ -217,6 +235,7 @@ with tab_browse:
         return fdf[mask]
 
     filtered = apply_range(filtered, "Price_INR", pr_range, include_blank_price)
+    filtered = apply_range(filtered, "Rent_INR", rent_range, True)
     filtered = apply_range(filtered, "Area_Sft", ar_range, include_blank_area)
     filtered = apply_range(filtered, "Gross_Yield_%", ye_range, include_blank_yield)
     filtered = apply_range(filtered, "Lease_Years", le_range, include_blank_lease)
@@ -231,12 +250,12 @@ with tab_browse:
 
     st.caption(f"Showing **{len(filtered)}** of **{len(df)}** total rows")
 
-    # KPIs (scaled avg price in selected unit)
+    # KPIs
     price_mean = pd.to_numeric(filtered.get("Price_INR", pd.Series(dtype=float)), errors="coerce").dropna().mean()
     area_mean  = pd.to_numeric(filtered.get("Area_Sft", pd.Series(dtype=float)), errors="coerce").dropna().mean()
     yield_mean = pd.to_numeric(filtered.get("Gross_Yield_%", pd.Series(dtype=float)), errors="coerce").dropna().mean()
-    price_mean_scaled, price_label, symbol = scale_currency(pd.Series([price_mean]), unit)
-    price_mean_scaled = price_mean_scaled.iloc[0] if not pd.isna(price_mean) else None
+    price_mean_scaled, price_label, _ = scale_currency(pd.Series([price_mean]), unit)
+    price_mean_scaled = price_mean_scaled.iloc[0] if pd.notna(price_mean) else None
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Listings", len(filtered))
@@ -246,115 +265,85 @@ with tab_browse:
     with_parking = pd.to_numeric(filtered.get("Parking_Cars", pd.Series(dtype=float)), errors="coerce").fillna(0).gt(0).sum()
     c5.metric("With Parking", int(with_parking))
 
-    # Results table with currency scaling for Price/Rent
+    # Results table with display Price/Rent columns
     show_cols = [
         "Location","Tenant","Area_Sft","Price_INR","Rent_INR",
         "Price_per_Sft","Rent_per_Sft","Gross_Yield_%",
         "Lease_Years","LockIn_Years","Increment_%","Increment_Every_Years",
-        "Advance_Months","Parking_Cars","UDS_SqYards",
-        "LocMedian_Price_per_Sft","VsLocMedian_Price_per_Sft_%",
-        "LocMedian_Rent_per_Sft","VsLocMedian_Rent_per_Sft_%",
-        "LocMedian_Gross_Yield_%","VsLocMedian_Gross_Yield_%",
-        "Outlier_Price_per_Sft","Outlier_Rent_per_Sft","Outlier_Gross_Yield_%"
+        "Advance_Months","Parking_Cars","UDS_SqYards"
     ]
     available_cols = [c for c in show_cols if c in filtered.columns]
     disp = filtered[available_cols].copy()
     disp = coerce_numeric(disp, ["Area_Sft","Price_INR","Rent_INR","Price_per_Sft","Rent_per_Sft","Gross_Yield_%",
                                  "Lease_Years","LockIn_Years","Increment_%","Increment_Every_Years","Advance_Months",
-                                 "Parking_Cars","UDS_SqYards",
-                                 "LocMedian_Price_per_Sft","VsLocMedian_Price_per_Sft_%",
-                                 "LocMedian_Rent_per_Sft","VsLocMedian_Rent_per_Sft_%",
-                                 "LocMedian_Gross_Yield_%","VsLocMedian_Gross_Yield_%"])
-
-    disp["Price_disp"], price_label, _ = scale_currency(disp["Price_INR"], unit)
-    disp["Rent_disp"], rent_label, _ = scale_currency(disp["Rent_INR"], unit)
-
-    disp = disp.replace({pd.NA: "—"}).fillna("—")
+                                 "Parking_Cars","UDS_SqYards"])
+    # Add display price/rent
+    disp["Price_disp"], price_lbl, _ = scale_currency(disp["Price_INR"], unit)
+    disp["Rent_disp"], rent_lbl, _   = scale_currency(disp["Rent_INR"], unit)
+    disp = disp.rename(columns={"Price_disp": f"Price ({price_lbl})", "Rent_disp": f"Rent ({rent_lbl})"})
+    order_cols = ["Location","Tenant","Area_Sft",f"Price ({price_lbl})",f"Rent ({rent_lbl})",
+                  "Price_per_Sft","Rent_per_Sft","Gross_Yield_%",
+                  "Lease_Years","LockIn_Years","Increment_%","Increment_Every_Years",
+                  "Advance_Months","Parking_Cars","UDS_SqYards"]
+    order_cols = [c for c in order_cols if c in disp.columns]
+    disp = disp[order_cols]
 
     st.subheader("Results")
-    preferred_cols = [
-        "Location","Tenant","Area_Sft",f"Price ({price_label})",f"Rent ({rent_label})",
-        "Price_per_Sft","Rent_per_Sft","Gross_Yield_%",
-        "Lease_Years","LockIn_Years",
-        "LocMedian_Price_per_Sft","VsLocMedian_Price_per_Sft_%",
-        "LocMedian_Rent_per_Sft","VsLocMedian_Rent_per_Sft_%",
-        "LocMedian_Gross_Yield_%","VsLocMedian_Gross_Yield_%",
-        "Outlier_Price_per_Sft","Outlier_Rent_per_Sft","Outlier_Gross_Yield_%"
-    ]
-    try:
-        st.dataframe(
-            disp.rename(columns={
-                "Price_disp": f"Price ({price_label})",
-                "Rent_disp": f"Rent ({rent_label})"
-            })[[c for c in preferred_cols if c in disp.rename(columns={"Price_disp": f"Price ({price_label})","Rent_disp": f"Rent ({rent_label})"}).columns]],
-            use_container_width=True
-        )
-    except Exception:
-        st.dataframe(disp, use_container_width=True)
+    st.dataframe(disp, use_container_width=True)
 
     st.download_button(
         label="⬇️ Download Filtered Results (Excel)",
         data=to_excel_bytes(disp, "Filtered"),
-        file_name="filtered_properties_v2_7.xlsx",
+        file_name="filtered_properties_v2_7_display_units.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
 # ---- Insights ----
 with tab_insights:
     st.subheader("Insights")
-    try:
-        filtered
-    except NameError:
-        filtered = df
-    f2 = filtered.copy()
+    f2 = filtered.copy() if "filtered" in locals() else df.copy()
     f2["Price_INR"] = pd.to_numeric(f2["Price_INR"], errors="coerce")
     f2["Area_Sft"]  = pd.to_numeric(f2["Area_Sft"], errors="coerce")
     f2["Rent_INR"]  = pd.to_numeric(f2["Rent_INR"], errors="coerce")
     f2["Gross_Yield_%"] = pd.to_numeric(f2["Gross_Yield_%"], errors="coerce")
-    if f2.dropna(how="all").empty:
-        st.info("No data after filters.")
+
+    st.markdown("**Top Locations by Listing Count**")
+    loc_counts = f2["Location"].astype(str).value_counts().head(10)
+    if plt is None:
+        st.bar_chart(loc_counts)
     else:
-        st.markdown("**Top Locations by Listing Count**")
-        loc_counts = f2["Location"].astype(str).value_counts().head(10)
+        fig1, ax1 = plt.subplots()
+        ax1.bar(loc_counts.index, loc_counts.values)
+        ax1.set_xlabel("Location"); ax1.set_ylabel("Listings")
+        ax1.set_xticklabels(loc_counts.index, rotation=45, ha="right")
+        st.pyplot(fig1)
+
+    st.markdown("**Gross Yield (%) Distribution**")
+    ys = f2["Gross_Yield_%"].dropna()
+    if not ys.empty:
         if plt is None:
-            st.bar_chart(loc_counts)
+            st.bar_chart(ys.value_counts(bins=10).sort_index())
         else:
-            fig1, ax1 = plt.subplots()
-            ax1.bar(loc_counts.index, loc_counts.values)
-            ax1.set_xlabel("Location")
-            ax1.set_ylabel("Listings")
-            ax1.set_xticklabels(loc_counts.index, rotation=45, ha="right")
-            st.pyplot(fig1)
+            fig2, ax2 = plt.subplots()
+            ax2.hist(ys, bins=10)
+            ax2.set_xlabel("Gross Yield (%)"); ax2.set_ylabel("Frequency")
+            st.pyplot(fig2)
+    else:
+        st.write("No yield data available.")
 
-        st.markdown("**Gross Yield (%) Distribution**")
-        ys = f2["Gross_Yield_%"].dropna()
-        if not ys.empty:
-            if plt is None:
-                hist = ys.value_counts(bins=10).sort_index()
-                st.bar_chart(hist)
-            else:
-                fig2, ax2 = plt.subplots()
-                ax2.hist(ys, bins=10)
-                ax2.set_xlabel("Gross Yield (%)")
-                ax2.set_ylabel("Frequency")
-                st.pyplot(fig2)
+    st.markdown("**Price vs Area (bubble ~ Rent)**")
+    valid = f2.dropna(subset=["Price_INR","Area_Sft","Rent_INR"])
+    if not valid.empty:
+        if plt is None:
+            st.scatter_chart(valid.rename(columns={"Area_Sft":"x","Price_INR":"y"})[["x","y"]])
         else:
-            st.write("No yield data available.")
-
-        st.markdown("**Price vs Area (bubble ~ Rent)**")
-        valid = f2.dropna(subset=["Price_INR","Area_Sft","Rent_INR"])
-        if not valid.empty:
-            if plt is None:
-                st.scatter_chart(valid.rename(columns={"Area_Sft":"x","Price_INR":"y"})[["x","y"]])
-            else:
-                s = (valid["Rent_INR"] / valid["Rent_INR"].max()) * 300.0
-                fig3, ax3 = plt.subplots()
-                ax3.scatter(valid["Area_Sft"], valid["Price_INR"], s=s)
-                ax3.set_xlabel("Area (Sft)")
-                ax3.set_ylabel("Price (INR)")
-                st.pyplot(fig3)
-        else:
-            st.write("Not enough data for scatter plot.")
+            s = (valid["Rent_INR"] / valid["Rent_INR"].max()) * 300.0
+            fig3, ax3 = plt.subplots()
+            ax3.scatter(valid["Area_Sft"], valid["Price_INR"], s=s)
+            ax3.set_xlabel("Area (Sft)"); ax3.set_ylabel("Price (INR)")
+            st.pyplot(fig3)
+    else:
+        st.write("Not enough data for scatter plot.")
 
 # ---- Loan ----
 with tab_loan:
@@ -367,7 +356,6 @@ with tab_loan:
     with colC:
         down_pct = st.number_input("Down Payment (%)", min_value=0.0, max_value=90.0, value=20.0, step=1.0, key="loan_down")
 
-    # Net numbers toggle
     st.markdown("**Net numbers (apply to Loan & Deals)**")
     use_net = st.checkbox("Use net numbers", value=False, key="use_net")
     colN1, colN2, colN3, colN4 = st.columns(4)
@@ -380,12 +368,7 @@ with tab_loan:
     with colN4:
         taxes_inr = st.number_input("Taxes (₹/mo)", 0.0, 1e7, 0.0, 1000.0, key="taxes")
 
-    try:
-        filtered
-    except NameError:
-        filtered = df.copy()
-
-    loan_df = filtered.copy()
+    loan_df = filtered.copy() if "filtered" in locals() else df.copy()
     loan_df["Price_INR"] = pd.to_numeric(loan_df["Price_INR"], errors="coerce")
     loan_df["Rent_INR"] = pd.to_numeric(loan_df["Rent_INR"], errors="coerce")
 
@@ -396,16 +379,16 @@ with tab_loan:
     loan_df["Principal_INR"] = loan_df["Price_INR"] * ltv
     loan_df["EMI_INR"] = loan_df["Principal_INR"].apply(lambda p: emi(p, r, n))
 
-    # Net rent
     rent_net = loan_df["Rent_INR"]
     if use_net:
-        rent_net = (rent_net * (1 - st.session_state["vacancy"]/100.0) * (1 - st.session_state["opex"]/100.0)) - (st.session_state["maint"] + st.session_state["taxes"])
+        rent_net = (rent_net * (1 - vacancy/100.0) * (1 - opex_pct/100.0)) - (maint_inr + taxes_inr)
 
     loan_df["Monthly_Cashflow_INR"] = rent_net - loan_df["EMI_INR"]
     loan_df["DSCR"] = loan_df.apply(lambda x: (rent_net.loc[x.name] / x["EMI_INR"]) if (pd.notna(rent_net.loc[x.name]) and pd.notna(x["EMI_INR"]) and x["EMI_INR"] > 0) else None, axis=1)
     loan_df["Down_Payment_INR"] = loan_df["Price_INR"] * (down_pct / 100.0)
     loan_df["LTV_%"] = ltv * 100.0
 
+    # KPIs
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Listings in scope", int(len(loan_df.dropna(subset=["Price_INR", "Rent_INR"]))))
     avg_emi = pd.to_numeric(loan_df["EMI_INR"], errors="coerce").dropna().mean()
@@ -415,18 +398,45 @@ with tab_loan:
     med_dscr = pd.to_numeric(loan_df["DSCR"], errors="coerce").dropna().median()
     k4.metric("Median DSCR", fmt_num(med_dscr, 2) if pd.notna(med_dscr) else "—")
 
-    show_cols_loan = [
-        "Location","Tenant","Area_Sft","Price_INR","Rent_INR",
-        "Down_Payment_INR","Principal_INR","EMI_INR",
-        "Monthly_Cashflow_INR","DSCR","LTV_%","Lease_Years","LockIn_Years"
+    # Display-scaled table
+    price_scaled, price_label, _      = scale_currency(loan_df["Price_INR"], unit)
+    rent_scaled, rent_label_base, _   = scale_currency(loan_df["Rent_INR"], monthly_unit(unit))
+    dp_scaled, dp_label, _            = scale_currency(loan_df["Down_Payment_INR"], unit)
+    principal_scaled, principal_label,_= scale_currency(loan_df["Principal_INR"], unit)
+    emi_scaled, emi_label, _          = scale_currency(loan_df["EMI_INR"], monthly_unit(unit))
+    cf_scaled, cf_label, _            = scale_currency(loan_df["Monthly_Cashflow_INR"], monthly_unit(unit))
+
+    loan_view = loan_df.copy()
+    loan_view["Price_disp"]       = price_scaled
+    loan_view["Rent_disp"]        = rent_scaled
+    loan_view["Down_Payment_disp"]= dp_scaled
+    loan_view["Principal_disp"]   = principal_scaled
+    loan_view["EMI_disp"]         = emi_scaled
+    loan_view["Cashflow_disp"]    = cf_scaled
+
+    loan_cols_display = [
+        "Location","Tenant","Area_Sft",
+        "Price_disp","Rent_disp","Down_Payment_disp","Principal_disp","EMI_disp","Cashflow_disp",
+        "DSCR","LTV_%","Lease_Years","LockIn_Years"
     ]
-    avail_loan_cols = [c for c in show_cols_loan if c in loan_df.columns]
-    st.dataframe(loan_df[avail_loan_cols].reset_index(drop=True), use_container_width=True)
+    loan_cols_display = [c for c in loan_cols_display if c in loan_view.columns]
+
+    loan_view = loan_view[loan_cols_display].rename(columns={
+        "Price_disp":        f"Price ({unit})",
+        "Rent_disp":         f"Rent ({monthly_unit(unit)})/mo",
+        "Down_Payment_disp": f"Down Payment ({unit})",
+        "Principal_disp":    f"Principal ({unit})",
+        "EMI_disp":          f"EMI ({monthly_unit(unit)})/mo",
+        "Cashflow_disp":     f"Monthly Cashflow ({monthly_unit(unit)})/mo",
+    })
+    st.dataframe(loan_view.reset_index(drop=True), use_container_width=True)
 
     st.download_button(
-        label="⬇️ Download Loan Analysis (Excel)",
-        data=to_excel_bytes(loan_df[avail_loan_cols], "Loan Analysis"),
-        file_name="loan_analysis_v2_7.xlsx",
+        label="⬇️ Download Loan Analysis (Excel, raw INR)",
+        data=to_excel_bytes(loan_df[["Location","Tenant","Area_Sft","Price_INR","Rent_INR",
+                                     "Down_Payment_INR","Principal_INR","EMI_INR",
+                                     "Monthly_Cashflow_INR","DSCR","LTV_%","Lease_Years","LockIn_Years"]], "Loan Analysis"),
+        file_name="loan_analysis_v2_7_raw.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
@@ -434,18 +444,17 @@ with tab_loan:
 with tab_deals:
     st.subheader("Best Deals — Winsorized DealScore (%) + Net Numbers + What‑if + Shortlist")
 
-    # Inputs
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
-        target_yield = st.number_input("Target Yield %", min_value=0.0, max_value=50.0, value=7.0, step=0.1)
+        target_yield = st.number_input("Target Yield %", 0.0, 50.0, 7.0, 0.1)
     with col2:
-        min_lease = st.number_input("Min Lease Years", min_value=0.0, max_value=99.0, value=5.0, step=1.0)
+        min_lease = st.number_input("Min Lease Years", 0.0, 99.0, 5.0, 1.0)
     with col3:
-        min_lock = st.number_input("Min Lock-in Years", min_value=0.0, max_value=99.0, value=2.0, step=1.0)
+        min_lock = st.number_input("Min Lock-in Years", 0.0, 99.0, 2.0, 1.0)
     with col4:
-        min_dscr = st.number_input("Min DSCR", min_value=0.0, max_value=5.0, value=1.1, step=0.1)
+        min_dscr = st.number_input("Min DSCR", 0.0, 5.0, 1.1, 0.1)
     with col5:
-        topn = st.number_input("Show Top N", min_value=1, max_value=100, value=10, step=1)
+        topn = st.number_input("Show Top N", 1, 100, 10, 1)
 
     w1, w2, w3 = st.columns(3)
     with w1:
@@ -455,16 +464,14 @@ with tab_deals:
     with w3:
         deal_w_price = st.slider("Weight: Price/ft² (lower better)", 0.0, 1.0, 0.3, 0.05)
 
-    # Loan assumptions
     lc1, lc2, lc3 = st.columns(3)
     with lc1:
-        d_interest = st.number_input("Loan: Annual Interest %", min_value=0.0, max_value=30.0, value=st.session_state.get("loan_rate", 8.5), step=0.1, key="d_int")
+        d_interest = st.number_input("Loan: Annual Interest %", 0.0, 30.0, st.session_state.get("loan_rate", 8.5), 0.1, key="d_int")
     with lc2:
-        d_years = st.number_input("Loan: Tenure (years)", min_value=1, max_value=40, value=st.session_state.get("loan_years", 20), step=1, key="d_years")
+        d_years = st.number_input("Loan: Tenure (years)", 1, 40, st.session_state.get("loan_years", 20), 1, key="d_years")
     with lc3:
-        d_down = st.number_input("Loan: Down Payment %", min_value=0.0, max_value=90.0, value=st.session_state.get("loan_down", 20.0), step=1.0, key="d_down")
+        d_down = st.number_input("Loan: Down Payment %", 0.0, 90.0, st.session_state.get("loan_down", 20.0), 1.0, key="d_down")
 
-    # Net numbers (shared with Loan)
     st.markdown("**Net numbers (shared with Loan tab)**")
     use_net = st.checkbox("Use net numbers", value=st.session_state.get("use_net", False), key="use_net_deals")
     vacancy = st.number_input("Vacancy %", 0.0, 50.0, st.session_state.get("vacancy", 5.0), 0.5, key="vacancy_deals")
@@ -472,7 +479,6 @@ with tab_deals:
     maint_inr = st.number_input("Maintenance (₹/mo)", 0.0, 1e7, st.session_state.get("maint", 0.0), 1000.0, key="maint_deals")
     taxes_inr = st.number_input("Taxes (₹/mo)", 0.0, 1e7, st.session_state.get("taxes", 0.0), 1000.0, key="taxes_deals")
 
-    # What‑if sliders
     st.markdown("**What‑if adjustments** (applied before scoring)")
     colw1, colw2 = st.columns(2)
     with colw1:
@@ -482,17 +488,12 @@ with tab_deals:
 
     top_deals_only = st.checkbox("Top Deals Only (DSCR ≥ 1.1, Yield ≥ target, Lease ≥ min, Lock‑in ≥ min, Positive CF)", value=False)
 
-    try:
-        filtered
-    except NameError:
-        filtered = df.copy()
+    deals = filtered.copy() if "filtered" in locals() else df.copy()
+    deals = coerce_numeric(deals, ["Price_INR","Rent_INR","Gross_Yield_%","Lease_Years","LockIn_Years","Price_per_Sft"])
 
-    deals = filtered.copy()
-    deals = coerce_numeric(deals, ["Price_INR","Rent_INR","Gross_Yield_%","Lease_Years","LockIn_Years","Price_per_Sft","Parking_Cars"])
-
-    # Apply what‑if
+    # Apply what-if
     deals["Price_INR_adj"] = deals["Price_INR"] * (1 - price_disc/100.0)
-    deals["Rent_INR_adj"] = deals["Rent_INR"] * (1 + rent_up/100.0)
+    deals["Rent_INR_adj"]  = deals["Rent_INR"] * (1 + rent_up/100.0)
 
     # Financing
     r = float(d_interest) / 100.0 / 12.0
@@ -507,25 +508,24 @@ with tab_deals:
     if use_net:
         rent_eff = (rent_eff * (1 - vacancy/100.0) * (1 - opex_pct/100.0)) - (maint_inr + taxes_inr)
 
-    # Recompute yield on adjusted values
-    deals["Gross_Yield_%"] = (deals["Rent_INR_adj"] * 12 / deals["Price_INR_adj"] * 100).where((deals["Price_INR_adj"] > 0) & deals["Rent_INR_adj"].notna())
-    deals["Net_Yield_%"] = (rent_eff * 12 / deals["Price_INR_adj"] * 100).where((deals["Price_INR_adj"] > 0) & rent_eff.notna())
-
     deals["Monthly_Cashflow_INR"] = rent_eff - deals["EMI_INR"]
     deals["DSCR"] = deals.apply(lambda x: (rent_eff.loc[x.name] / x["EMI_INR"]) if (pd.notna(rent_eff.loc[x.name]) and pd.notna(x["EMI_INR"]) and x["EMI_INR"] > 0) else None, axis=1)
+
+    # (Re)compute yields on adjusted values
+    deals["Gross_Yield_%"] = (deals["Rent_INR_adj"] * 12 / deals["Price_INR_adj"] * 100).where((deals["Price_INR_adj"] > 0) & deals["Rent_INR_adj"].notna())
+    deals["Net_Yield_%"]   = (rent_eff * 12 / deals["Price_INR_adj"] * 100).where((deals["Price_INR_adj"] > 0) & rent_eff.notna())
 
     # Hard constraints (soft if value missing)
     ly = pd.to_numeric(deals["Lease_Years"], errors="coerce")
     li = pd.to_numeric(deals["LockIn_Years"], errors="coerce")
     ds = pd.to_numeric(deals["DSCR"], errors="coerce")
-
     mask = pd.Series(True, index=deals.index)
     mask &= (ly.isna() | (ly >= min_lease))
     mask &= (li.isna() | (li >= min_lock))
     mask &= (ds.isna() | (ds >= min_dscr))
     deals = deals[mask].copy()
 
-    # Winsorized DealScore with missingness penalty
+    # Winsorized DealScore with small missingness penalty
     y_base = winsor(deals["Net_Yield_%"] if use_net else deals["Gross_Yield_%"])
     l_base = winsor(deals["Lease_Years"])
     p_base = winsor(deals["Price_per_Sft"])
@@ -543,8 +543,8 @@ with tab_deals:
     deals["DealScore"] = deals["DealScore"].clip(lower=0)
     deals["DealScore_%"] = (deals["DealScore"] * 100).round(1)
 
-    # Positive CF suggestions
-    deals["Pmax_for_rent"] = deals["Rent_INR_adj"].apply(lambda m: principal_for_emi(m if not use_net else (m*(1 - vacancy/100.0)*(1 - opex_pct/100.0) - (maint_inr + taxes_inr)), r, n))
+    # Positive cashflow suggestions
+    deals["Pmax_for_rent"] = deals["Rent_INR_adj"].apply(lambda m: principal_for_emi((m if not use_net else (m*(1 - vacancy/100.0)*(1 - opex_pct/100.0) - (maint_inr + taxes_inr))), r, n))
     deals["Price_BreakEven_INR"] = deals.apply(lambda x: (x["Pmax_for_rent"] / ltv) if (pd.notna(x["Pmax_for_rent"]) and ltv > 0) else None, axis=1)
     deals["Price_Discount_Needed_%"] = deals.apply(
         lambda x: (100.0 * (1 - x["Price_BreakEven_INR"] / x["Price_INR_adj"])) if (pd.notna(x["Price_BreakEven_INR"]) and pd.notna(x["Price_INR_adj"]) and x["Price_INR_adj"] > 0) else None,
@@ -552,8 +552,6 @@ with tab_deals:
     )
     deals["Rent_Needed_PosCF_INR"] = deals["EMI_INR"]
     if use_net:
-        # Invert net formula approximately for rent needed
-        # rent_gross * (1 - vac)*(1 - opex) - (maint+taxes) >= EMI  => rent_gross >= (EMI + maint+taxes) / ((1-v)(1-o))
         denom = (1 - vacancy/100.0) * (1 - opex_pct/100.0)
         deals["Rent_Needed_PosCF_INR"] = (deals["EMI_INR"] + (maint_inr + taxes_inr)) / (denom if denom > 0 else np.nan)
     deals["Rent_Increase_%"] = deals.apply(
@@ -561,7 +559,7 @@ with tab_deals:
         axis=1
     )
     deals["LTV_Needed"] = deals.apply(
-        lambda x: min(1.0, (principal_for_emi((x["Rent_INR_adj"] if not use_net else ((x["Rent_INR_adj"]*(1 - vacancy/100.0)*(1 - opex_pct/100.0) - (maint_inr + taxes_inr)))), r, n) / x["Price_INR_adj"])) if (pd.notna(x["Price_INR_adj"]) and pd.notna(x["Rent_INR_adj"]) and x["Price_INR_adj"] > 0) else None,
+        lambda x: min(1.0, (principal_for_emi((x["Rent_INR_adj"] if not use_net else (x["Rent_INR_adj"]*(1 - vacancy/100.0)*(1 - opex_pct/100.0) - (maint_inr + taxes_inr))), r, n) / x["Price_INR_adj"])) if (pd.notna(x["Price_INR_adj"]) and pd.notna(x["Rent_INR_adj"]) and x["Price_INR_adj"] > 0) else None,
         axis=1
     )
     deals["Down_%_Needed_for_PosCF"] = deals["LTV_Needed"].apply(lambda l: (1.0 - l) * 100.0 if pd.notna(l) else None)
@@ -596,7 +594,6 @@ with tab_deals:
         return f"{best[0]} → {best[2]}"
     deals["Best_Action"] = deals.apply(best_action, axis=1)
 
-    # Top Deals Only filter
     if top_deals_only:
         meets = pd.Series(True, index=deals.index)
         meets &= (pd.to_numeric(deals["DSCR"], errors="coerce") >= 1.1)
@@ -606,46 +603,55 @@ with tab_deals:
         meets &= (pd.to_numeric(deals["Monthly_Cashflow_INR"], errors="coerce") >= 0)
         deals = deals[meets]
 
-    # Sort & show
     deals_sorted = deals.sort_values(by=["DealScore"], ascending=False, na_position="last").head(int(topn)).copy()
 
-    # Shortlist (editable)
+    # Display-scaled columns for editor (use Lakh for monthly flows when unit=Cr)
+    price_scaled,  price_lbl, _ = scale_currency(deals_sorted["Price_INR_adj"], unit)
+    rent_scaled,   rent_lbl, _  = scale_currency(deals_sorted["Rent_INR_adj"], monthly_unit(unit))
+    emi_scaled,    emi_lbl, _   = scale_currency(deals_sorted["EMI_INR"], monthly_unit(unit))
+    cf_scaled,     cf_lbl, _    = scale_currency(deals_sorted["Monthly_Cashflow_INR"], monthly_unit(unit))
+    be_scaled,     be_lbl, _    = scale_currency(deals_sorted["Price_BreakEven_INR"], unit)
+    ed_scaled,     ed_lbl, _    = scale_currency(deals_sorted["Extra_Down_INR"], unit)
+    rn_scaled,     rn_lbl, _    = scale_currency(deals_sorted["Rent_Needed_PosCF_INR"], monthly_unit(unit))
+
+    deals_sorted["Price_disp"]      = price_scaled
+    deals_sorted["Rent_disp"]       = rent_scaled
+    deals_sorted["EMI_disp"]        = emi_scaled
+    deals_sorted["Cashflow_disp"]   = cf_scaled
+    deals_sorted["BreakEven_disp"]  = be_scaled
+    deals_sorted["ExtraDown_disp"]  = ed_scaled
+    deals_sorted["RentNeeded_disp"] = rn_scaled
+
     deals_sorted["RowKey"] = deals_sorted.apply(rowkey, axis=1)
     if "shortlist" not in st.session_state:
         st.session_state["shortlist"] = {}
-    # Pre-fill selections
     deals_sorted["⭐ Shortlist"] = deals_sorted["RowKey"].map(lambda k: st.session_state["shortlist"].get(k, False))
+
     edited = st.data_editor(
         deals_sorted[[
-            "⭐ Shortlist","DealScore_%","Location","Tenant","Area_Sft","Price_INR_adj","Rent_INR_adj",
+            "⭐ Shortlist","DealScore_%","Location","Tenant","Area_Sft","Price_disp","Rent_disp",
             "Gross_Yield_%","Net_Yield_%","Lease_Years","LockIn_Years","DSCR",
-            "Price_per_Sft","Price_BreakEven_INR","Price_Discount_Needed_%",
-            "Rent_Needed_PosCF_INR","Rent_Increase_%",
-            "Down_%_Needed_for_PosCF","Extra_Down_%_Required","Extra_Down_INR",
+            "Price_per_Sft","BreakEven_disp","Price_Discount_Needed_%",
+            "RentNeeded_disp","Rent_Increase_%",
+            "Down_%_Needed_for_PosCF","Extra_Down_%_Required","ExtraDown_disp",
             "Rate_Needed_annual_%","Rate_Reduction_pp","Best_Action","RowKey"
         ]].reset_index(drop=True),
         hide_index=True,
         use_container_width=True,
-        key="editor_deals"
+        key="editor_deals_display"
     )
 
-    # Update shortlist
+    # Update shortlist state
     for _, row in edited.iterrows():
         st.session_state["shortlist"][row["RowKey"]] = bool(row["⭐ Shortlist"])
 
-    # Shortlist export
     shortlist_keys = [k for k, v in st.session_state["shortlist"].items() if v]
     shortlist_df = deals[deals.apply(rowkey, axis=1).isin(shortlist_keys)].copy()
-    st.download_button(
-        "⬇️ Download Shortlist (CSV)",
-        data=shortlist_df.to_csv(index=False),
-        file_name="shortlist_v2_7.csv",
-        mime="text/csv"
-    )
+    st.download_button("⬇️ Download Shortlist (CSV)", data=shortlist_df.to_csv(index=False), file_name="shortlist_v2_7.csv", mime="text/csv")
 
     st.download_button(
-        label="⬇️ Download Best Deals (Excel)",
-        data=to_excel_bytes(deals_sorted.drop(columns=["RowKey","⭐ Shortlist"], errors="ignore"), "Best Deals V2.7"),
-        file_name="best_deals_v2_7.xlsx",
+        label="⬇️ Download Best Deals (Excel, raw INR)",
+        data=to_excel_bytes(deals_sorted.drop(columns=["RowKey","⭐ Shortlist","Price_disp","Rent_disp","EMI_disp","Cashflow_disp","BreakEven_disp","ExtraDown_disp","RentNeeded_disp"], errors="ignore"), "Best Deals V2.7"),
+        file_name="best_deals_v2_7_raw.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
