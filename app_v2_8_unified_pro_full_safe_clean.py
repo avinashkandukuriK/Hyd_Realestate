@@ -125,7 +125,9 @@ with tab_browse:
     with k3: st.metric("Median Price/sft", f"{np.nanmedian(q['Price_per_Sft']) if 'Price_per_Sft' in q else np.nan:,.0f}")
     with k4: st.metric("Median Rent/sft",  f"{np.nanmedian(q['Rent_per_Sft']) if 'Rent_per_Sft' in q else np.nan:,.1f}")
 
-    st.dataframe(q[show_cols].sort_values(by="DealScore_%", ascending=False, na_position="last"), use_container_width=True)
+    sort_col = "DealScore_%"
+    q_sorted = q.sort_values(by=sort_col, ascending=False, na_position="last") if sort_col in q.columns else q
+    st.dataframe(q_sorted[show_cols], use_container_width=True)
 
 with tab_best:
     st.subheader("Best Deals")
