@@ -90,7 +90,19 @@ with tab_browse:
     with col6:
         dealscore_min = st.slider("Min DealScore %", 0.0, 100.0, 0.0)
     with col7:
-        show_cols = st.multiselect("Columns", options=list(df.columns), default=["Location","Tenant","Area_Sft","Price_Crore","Rent_Lakh","Price_per_Sft","Rent_per_Sft","Gross_Yield_%","DealScore_%"])
+        default_cols = [
+            "Location",
+            "Tenant",
+            "Area_Sft",
+            "Price_Crore",
+            "Rent_Lakh",
+            "Price_per_Sft",
+            "Rent_per_Sft",
+            "Gross_Yield_%",
+            "DealScore_%",
+        ]
+        default_cols = [c for c in default_cols if c in df.columns]
+        show_cols = st.multiselect("Columns", options=list(df.columns), default=default_cols)
 
     q = df.copy()
     if sel_locs:
