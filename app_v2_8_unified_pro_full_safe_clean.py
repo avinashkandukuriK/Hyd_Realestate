@@ -90,7 +90,19 @@ with tab_browse:
     with col6:
         dealscore_min = st.slider("Min DealScore %", 0.0, 100.0, 0.0)
     with col7:
-        show_cols = st.multiselect("Columns", options=list(df.columns), default=["Location","Tenant","Area_Sft","Price_Crore","Rent_Lakh","Price_per_Sft","Rent_per_Sft","Gross_Yield_%","DealScore_%"])
+        default_cols = [
+            "Location",
+            "Tenant",
+            "Area_Sft",
+            "Price_Crore",
+            "Rent_Lakh",
+            "Price_per_Sft",
+            "Rent_per_Sft",
+            "Gross_Yield_%",
+            "DealScore_%",
+        ]
+        default_cols = [c for c in default_cols if c in df.columns]
+        show_cols = st.multiselect("Columns", options=list(df.columns), default=default_cols)
 
     q = df.copy()
     if sel_locs:
@@ -113,7 +125,9 @@ with tab_browse:
     with k3: st.metric("Median Price/sft", f"{np.nanmedian(q['Price_per_Sft']) if 'Price_per_Sft' in q else np.nan:,.0f}")
     with k4: st.metric("Median Rent/sft",  f"{np.nanmedian(q['Rent_per_Sft']) if 'Rent_per_Sft' in q else np.nan:,.1f}")
 
-    st.dataframe(q[show_cols].sort_values(by="DealScore_%", ascending=False, na_position="last"), use_container_width=True)
+    sort_col = "DealScore_%"
+    q_sorted = q.sort_values(by=sort_col, ascending=False, na_position="last") if sort_col in q.columns else q
+    st.dataframe(q_sorted[show_cols], use_container_width=True)
 
 with tab_best:
     st.subheader("Best Deals")
